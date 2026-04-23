@@ -7,16 +7,23 @@ from sympy.printing.latex import LatexPrinter
 x, t, y, z = symbols('x t y z')   # z added for 3D directional shuffling
 u = Function('u')
 
-# SymPy prints 0.45 as 0.450000000000000. This overrides that.
+# SymPy prints 0.45 as 0.450000000000000, and k*coeff multiplications
+# produce floats like 2.4494999999999996. Both fixed by rounding to 6 sig figs.
+def _clean_float(v):
+    """Round a float to 6 significant figures, return as a clean string."""
+    if v == 0: return '0'
+    rounded = round(v, 6 - int(math.floor(math.log10(abs(v)))) - 1)
+    return str(int(rounded)) if rounded == int(rounded) else str(rounded)
+
 class _Printer(LatexPrinter):
     def _print_Float(self, expr):
-        return str(float(expr))
+        return _clean_float(float(expr))
 
 def sym_latex(expr):
     return _Printer().doprint(expr)
 
 def _fmt_num(expr):
-    return str(int(expr)) if expr.is_Integer else str(float(expr))
+    return str(int(expr)) if expr.is_Integer else _clean_float(float(expr))
 
 
 # ============================================================
@@ -191,6 +198,33 @@ def build_dialect(lhs_terms, rhs_terms, mode):
 
 
 # ============================================================
+# K-SCALING
+#
+# Multiply both sides of the equation by a random scalar k.
+# k ~ N(1, 1.0), resampled until |k| >= 0.1 to avoid near-zero.
+#
+# This makes the dataset harder: the model cannot read off a
+# coefficient and immediately infer the regime, since every
+# coefficient is scaled by an unknown k.  The RATIO between
+# terms is preserved — that is what determines physical behavior.
+#
+# NL is intentionally NOT scaled: humans write equations in
+# standard form regardless of algebraic rescaling.
+# ============================================================
+
+def sample_k():
+    """Sample a non-zero scaling factor from N(1, 1.0), |k| >= 0.1."""
+    while True:
+        k = round(random.gauss(1.0, 1.0), 2)
+        if abs(k) >= 0.1:
+            return k
+
+def scale_terms(terms, k):
+    """Multiply every term in the list by k (SymPy handles the algebra)."""
+    return [k * t for t in terms]
+
+
+# ============================================================
 # BURGERS:  u_t + u·u_s = ν·u_ss   (s = single spatial direction)
 #
 # Single direction only — 2D Burgers is a vector equation with
@@ -255,6 +289,9 @@ def generate_burgers():
     regime  = burgers_regime(nu)
     eq      = burgers_equation(nu, svar)
     lhs_t, rhs_t = positional_shuffle(eq)
+    k = sample_k()
+    lhs_t, rhs_t = scale_terms(lhs_t, k), scale_terms(rhs_t, k)
+    coeffs['k'] = k
     ops = BURGERS_OPERATORS[regime]
     rsn = random.choice(BURGERS_REASONING[regime]).format(**coeffs)
     return {
@@ -329,6 +366,9 @@ def generate_wave():
     regime  = wave_regime(c)
     eq      = wave_equation(coeffs['c_sq'], svars)
     lhs_t, rhs_t = positional_shuffle(eq)
+    k = sample_k()
+    lhs_t, rhs_t = scale_terms(lhs_t, k), scale_terms(rhs_t, k)
+    coeffs['k'] = k
     ops = WAVE_OPERATORS[regime]
     rsn = random.choice(WAVE_REASONING[regime]).format(**coeffs)
     return {
@@ -421,6 +461,9 @@ def generate_laplace():
     regime  = laplace_regime(A, B, C)
     eq      = laplace_equation(A, B, C, s1, s2)
     lhs_t, rhs_t = positional_shuffle(eq)
+    k = sample_k()
+    lhs_t, rhs_t = scale_terms(lhs_t, k), scale_terms(rhs_t, k)
+    coeffs['k'] = k
     ops = LAPLACE_OPERATORS[regime]
     rsn = random.choice(LAPLACE_REASONING[regime]).format(**coeffs)
     return {
@@ -514,6 +557,9 @@ def generate_klein_gordon():
     regime   = klein_gordon_regime(m)
     eq       = klein_gordon_equation(coeffs['c_sq'], coeffs['m_sq'], svars)
     lhs_t, rhs_t = positional_shuffle(eq)
+    k = sample_k()
+    lhs_t, rhs_t = scale_terms(lhs_t, k), scale_terms(rhs_t, k)
+    coeffs['k'] = k
     ops = KLEIN_GORDON_OPERATORS[regime]
     rsn = random.choice(KLEIN_GORDON_REASONING[regime]).format(**coeffs)
     return {
@@ -598,6 +644,9 @@ def generate_heat():
     regime = heat_regime(alpha)
     eq     = heat_equation(alpha, svars)
     lhs_t, rhs_t = positional_shuffle(eq)
+    k = sample_k()
+    lhs_t, rhs_t = scale_terms(lhs_t, k), scale_terms(rhs_t, k)
+    coeffs['k'] = k
     ops = HEAT_OPERATORS[regime]
     rsn = random.choice(HEAT_REASONING[regime]).format(**coeffs)
     return {
@@ -692,6 +741,9 @@ def generate_advection():
     regime = advection_regime(coeffs, svars)
     eq     = advection_equation(coeffs, svars)
     lhs_t, rhs_t = positional_shuffle(eq)
+    k = sample_k()
+    lhs_t, rhs_t = scale_terms(lhs_t, k), scale_terms(rhs_t, k)
+    coeffs['k'] = k
     ops = ADVECTION_OPERATORS[regime]
     rsn = random.choice(ADVECTION_REASONING[regime]).format(**coeffs)
     return {
@@ -721,7 +773,7 @@ GENERATORS = {
 
 INSTANCES_PER_FAMILY = 2000
 
-def generate_dataset(output_path='dataset.jsonl', seed=42):
+def generate_dataset(output_path='data/dataset.jsonl', seed=42):
     random.seed(seed)
     instances = []
     for family, gen_fn in GENERATORS.items():
@@ -846,7 +898,19 @@ def verify():
         assert inst['target'].startswith(f"family: {inst['family']} |")
         assert 'operators:' in inst['target']
         assert 'reasoning:' in inst['target']
-    print("check 10 passed: target format correct for all families\n")
+    print("check 10 passed: target format correct for all families")
+
+    # --- k-scaling: |k| >= 0.1 always, k stored in coefficients, k varies across instances ---
+    random.seed(77)
+    k_values = set()
+    for gen_fn in GENERATORS.values():
+        for _ in range(50):
+            inst = gen_fn()
+            k = inst['coefficients']['k']
+            assert abs(k) >= 0.1, f"k={k} is too close to zero"
+            k_values.add(k)
+    assert len(k_values) > 10, "k is not varying — sample_k() may be broken"
+    print("check 11 passed: k never near-zero and varies across instances\n")
 
 
 if __name__ == '__main__':

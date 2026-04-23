@@ -7,7 +7,7 @@ VAL_PER_FAMILY   = 200
 TEST_PER_FAMILY  = 200
 SEED             = 42
 
-def split_dataset(input_path='dataset.jsonl', output_dir='.'):
+def split_dataset(input_path='data/dataset.jsonl', output_dir='data'):
     random.seed(SEED)
 
     # group records by family
