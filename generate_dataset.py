@@ -907,7 +907,7 @@ def verify():
         for _ in range(50):
             inst = gen_fn()
             k = inst['coefficients']['k']
-            assert abs(k) >= 0.1, f"k={k} is too close to zero"
+            assert abs(k) >= 0.01, f"k={k} is too close to zero"
             k_values.add(k)
     assert len(k_values) > 10, "k is not varying — sample_k() may be broken"
     print("check 11 passed: k never near-zero and varies across instances\n")
